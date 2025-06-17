@@ -1,6 +1,6 @@
 # GML to Cesium ION Uploader
 
-This Python script uploads GML files from the `data` folder to Cesium ION API paralelly
+This Python script uploads GML files from the `data` folder to Cesium ION API with parallel processing and optional archive creation.
 
 ## Quick Start
 
@@ -47,11 +47,14 @@ python main.py --logging
 # Upload and wait for processing completion
 python main.py --wait
 
+# Upload, wait for processing, and create archives
+python main.py --wait --archive
+
 # Upload with custom number of workers
 python main.py --workers 3
 
 # Combine options
-python main.py --wait --logging --workers 5
+python main.py --wait --archive --logging --workers 5
 
 # Deactivate when done
 deactivate
@@ -60,6 +63,7 @@ deactivate
 ## Command Line Options
 
 - `--wait`: Wait for processing completion (can take several minutes)
+- `--archive`: Create archives after successful processing so it can be downloaded later (requires --wait)
 - `--workers N`: Number of concurrent uploads (default: 5)
 - `--logging`: Enable detailed logging to file and console (default: disabled)
 
@@ -76,3 +80,29 @@ Example with logging enabled:
 ```bash
 python main.py --logging --wait
 ```
+
+## Additional Scripts
+
+### Asset Status Checker
+
+Check the status of uploaded assets:
+
+```bash
+# Check specific assets
+python check_status.py 12345 67890
+
+# List recent assets
+python check_status.py --list --limit 10
+
+# Monitor assets until completion
+python check_status.py --monitor 12345 67890
+```
+
+## Workflow Overview
+
+The complete workflow includes these steps:
+
+1. **Upload**: Create asset metadata and upload GML files to S3
+2. **Processing**: Monitor 3D tiling process until completion
+3. **Archive Creation** (optional): Create downloadable archives
+4. **Status Tracking**: Monitor all steps with detailed logging
