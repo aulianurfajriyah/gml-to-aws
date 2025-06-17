@@ -50,11 +50,14 @@ python main.py --wait
 # Upload, wait for processing, and create archives
 python main.py --wait --archive
 
+# Upload, wait for processing, create archives, and download them
+python main.py --wait --archive --download
+
 # Upload with custom number of workers
 python main.py --workers 3
 
-# Combine options
-python main.py --wait --archive --logging --workers 5
+# Combine options - complete workflow with downloads and logging
+python main.py --wait --archive --download --logging --workers 5
 
 # Deactivate when done
 deactivate
@@ -64,6 +67,7 @@ deactivate
 
 - `--wait`: Wait for processing completion (can take several minutes)
 - `--archive`: Create archives after successful processing so it can be downloaded later (requires --wait)
+- `--download`: Download archives to 'converted' folder after creation (requires --archive)
 - `--workers N`: Number of concurrent uploads (default: 5)
 - `--logging`: Enable detailed logging to file and console (default: disabled)
 
@@ -98,6 +102,27 @@ python check_status.py --list --limit 10
 python check_status.py --monitor 12345 67890
 ```
 
+### Archive Downloader
+
+Download archives from Cesium ION:
+
+```bash
+# Download all completed archives
+python download_archives.py
+
+# Download specific archives
+python download_archives.py --archive-ids 123 456
+
+# Download to custom directory
+python download_archives.py --output-dir downloads
+
+# List available archives without downloading
+python download_archives.py --list-only
+
+# Download with logging
+python download_archives.py --logging
+```
+
 ## Workflow Overview
 
 The complete workflow includes these steps:
@@ -105,4 +130,12 @@ The complete workflow includes these steps:
 1. **Upload**: Create asset metadata and upload GML files to S3
 2. **Processing**: Monitor 3D tiling process until completion
 3. **Archive Creation** (optional): Create downloadable archives
-4. **Status Tracking**: Monitor all steps with detailed logging
+4. **Archive Download** (optional): Download archives to 'converted' folder
+5. **Status Tracking**: Monitor all steps with detailed logging
+
+## Output Folders
+
+- `data/`: Place your GML files here for upload
+- `converted/`: Downloaded archives are saved here (when using --download)
+- `logs/`: Detailed log files (when using --logging)
+- `temp/`: Temporary files during processing
