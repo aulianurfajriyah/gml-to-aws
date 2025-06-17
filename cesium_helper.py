@@ -8,6 +8,7 @@ Implements the complete 4-step upload workflow:
 2. Upload files to S3
 3. Notify completion
 4. Monitor status
+5. Create and download archives
 """
 
 import os
@@ -17,6 +18,7 @@ import time
 import boto3
 import requests
 import logging
+import shutil
 from datetime import datetime
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -356,14 +358,15 @@ class CesiumAPIHelper:
         self._log("error", f"❌ Timeout waiting for asset {asset_id} processing (waited {elapsed:.1f}s)")
         return False, "TIMEOUT"
 
-    def upload_gml_file(self, file_path: str, wait_for_completion: bool = False, create_archive: bool = False) -> Tuple[str, bool, str, Optional[str]]:
+    def upload_gml_file(self, file_path: str, wait_for_completion: bool = False, create_archive: bool = False, download_archive: bool = False) -> Tuple[str, bool, str, Optional[str]]:
         """
-        Complete upload workflow for a GML file with optional archive creation.
+        Complete upload workflow for a GML file with optional archive creation and download.
         
         Args:
             file_path: Path to the GML file to upload
             wait_for_completion: Whether to wait for processing to complete
             create_archive: Whether to create archive after successful processing
+            download_archive: Whether to download archive after successful creation
             
         Returns:
             Tuple of (filename, success_status, message, asset_id)
@@ -407,14 +410,39 @@ class CesiumAPIHelper:
                             archive_completed, archive_status = self.wait_for_archive_completion(archive_id)
                             
                             if archive_completed:
-                                archive_info = {
-                                    'file': filename,
-                                    'asset_id': str(asset_id),
-                                    'archive_id': archive_id,
-                                }
-                                self.results['archived'].append(archive_info)
-                                self._log("info", f"✅ Complete workflow with archive success for {filename} (Asset ID: {asset_id}, Archive ID: {archive_id})")
-                                return filename, True, f"Upload, processing, and archive completed successfully (Asset ID: {asset_id}, Archive ID: {archive_id})", str(asset_id)
+                                # Step 6: Optionally download the archive
+                                if download_archive:
+                                    self._log("info", f"Downloading archive for {filename} (Archive ID: {archive_id})")
+                                    download_success, download_path = self.download_archive(archive_id)
+                                    
+                                    if download_success:
+                                        archive_info = {
+                                            'file': filename,
+                                            'asset_id': str(asset_id),
+                                            'archive_id': archive_id,
+                                            'download_path': download_path
+                                        }
+                                        self.results['archived'].append(archive_info)
+                                        self._log("info", f"✅ Complete workflow with archive download success for {filename} (Asset ID: {asset_id}, Archive ID: {archive_id}, Downloaded to: {download_path})")
+                                        return filename, True, f"Upload, processing, archive creation and download completed successfully (Asset ID: {asset_id}, Archive ID: {archive_id}, Downloaded to: {download_path})", str(asset_id)
+                                    else:
+                                        archive_info = {
+                                            'file': filename,
+                                            'asset_id': str(asset_id),
+                                            'archive_id': archive_id,
+                                        }
+                                        self.results['archived'].append(archive_info)
+                                        self._log("warning", f"⚠️ Archive created but download failed for {filename} (Asset ID: {asset_id}, Archive ID: {archive_id})")
+                                        return filename, True, f"Upload, processing, and archive completed successfully, but download failed (Asset ID: {asset_id}, Archive ID: {archive_id})", str(asset_id)
+                                else:
+                                    archive_info = {
+                                        'file': filename,
+                                        'asset_id': str(asset_id),
+                                        'archive_id': archive_id,
+                                    }
+                                    self.results['archived'].append(archive_info)
+                                    self._log("info", f"✅ Complete workflow with archive success for {filename} (Asset ID: {asset_id}, Archive ID: {archive_id})")
+                                    return filename, True, f"Upload, processing, and archive completed successfully (Asset ID: {asset_id}, Archive ID: {archive_id})", str(asset_id)
                             else:
                                 self._log("warning", f"⚠️ Processing succeeded but archive creation failed for {filename} (Asset ID: {asset_id})")
                                 return filename, True, f"Upload and processing completed, but archive failed with status: {archive_status} (Asset ID: {asset_id})", str(asset_id)
@@ -435,34 +463,38 @@ class CesiumAPIHelper:
             self._log("error", f"❌ Unexpected error in upload workflow for {filename}: {str(e)}")
             return filename, False, f"Unexpected error: {str(e)}", None
     
-    def upload_files_parallel(self, file_paths: List[str], max_workers: int = 10, wait_for_completion: bool = False, create_archive: bool = False) -> None:
+    def upload_files_parallel(self, file_paths: List[str], max_workers: int = 10, wait_for_completion: bool = False, create_archive: bool = False, download_archive: bool = False) -> None:
         """
-        Upload files in parallel with progress bar and optional archive creation.
+        Upload files in parallel with progress bar and optional archive creation and download.
         
         Args:
             file_paths: List of file paths to upload
             max_workers: Maximum number of concurrent uploads
             wait_for_completion: Whether to wait for processing to complete
             create_archive: Whether to create archives after successful processing
+            download_archive: Whether to download archives after successful creation
         """
         self._log("info", f"=== Starting parallel upload session ===")
         self._log("info", f"Files to upload: {len(file_paths)}")
         self._log("info", f"Max workers: {max_workers}")
         self._log("info", f"Wait for completion: {wait_for_completion}")
         self._log("info", f"Create archives: {create_archive}")
+        self._log("info", f"Download archives: {download_archive}")
         
         print(f"\n🚀 Starting upload of {len(file_paths)} GML files to Cesium ION...")
         if wait_for_completion:
             print("⏳ Will wait for processing completion...")
         if create_archive:
             print("📦 Will create archives after processing...")
+        if download_archive:
+            print("📥 Will download archives after creation...")
         
         start_time = time.time()
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tasks
             future_to_file = {
-                executor.submit(self.upload_gml_file, file_path, wait_for_completion, create_archive): file_path 
+                executor.submit(self.upload_gml_file, file_path, wait_for_completion, create_archive, download_archive): file_path 
                 for file_path in file_paths
             }
             
@@ -507,11 +539,12 @@ class CesiumAPIHelper:
         self._log("info", f"Success rate: {(success_count / len(file_paths)) * 100:.1f}%")
     
     def print_summary(self) -> None:
-        """Print a summary of upload results including archive information."""
+        """Print a summary of upload results including archive and download information."""
         total_files = len(self.results['success']) + len(self.results['failed'])
         success_count = len(self.results['success'])
         failed_count = len(self.results['failed'])
         archived_count = len(self.results['archived'])
+        downloaded_count = len([item for item in self.results['archived'] if item.get('download_path')])
         success_rate = (success_count / total_files * 100) if total_files > 0 else 0
         
         # Log summary to file
@@ -520,6 +553,7 @@ class CesiumAPIHelper:
         self._log("info", f"Successful uploads: {success_count}")
         self._log("info", f"Failed uploads: {failed_count}")
         self._log("info", f"Archived assets: {archived_count}")
+        self._log("info", f"Downloaded archives: {downloaded_count}")
         self._log("info", f"Success rate: {success_rate:.1f}%")
         
         print("\n" + "="*60)
@@ -529,6 +563,8 @@ class CesiumAPIHelper:
         print(f"✅ Successful uploads: {success_count}")
         print(f"❌ Failed uploads: {failed_count}")
         print(f"📦 Archived assets: {archived_count}")
+        if downloaded_count > 0:
+            print(f"📥 Downloaded archives: {downloaded_count}")
         print(f"📊 Success rate: {success_rate:.1f}%")
         
         if self.results['success']:
@@ -545,16 +581,38 @@ class CesiumAPIHelper:
             print("\n📦 ARCHIVED ASSETS:")
             print("-" * 40)
             self._log("info", "Archived assets details:")
+            downloaded_archives = []
+            created_only_archives = []
+            
             for item in self.results['archived']:
-                asset_id = item.get('asset_id', 'Unknown')
-                archive_id = item.get('archive_id', 'Unknown')
-                download_url = item.get('download_url')
-                print(f"  • {item['file']} (Asset ID: {asset_id})")
-                print(f"    Archive ID: {archive_id}")
-                if download_url:
-                    print(f"    Download: {download_url}")
-                print(f"    View Asset: https://ion.cesium.com/assets/{asset_id}")
-                self._log("info", f"  📦 {item['file']} -> Asset ID: {asset_id}, Archive ID: {archive_id}")
+                if item.get('download_path'):
+                    downloaded_archives.append(item)
+                else:
+                    created_only_archives.append(item)
+            
+            if downloaded_archives:
+                print("\n📥 DOWNLOADED ARCHIVES:")
+                print("-" * 30)
+                for item in downloaded_archives:
+                    asset_id = item.get('asset_id', 'Unknown')
+                    archive_id = item.get('archive_id', 'Unknown')
+                    download_path = item.get('download_path')
+                    print(f"  • {item['file']} (Asset ID: {asset_id})")
+                    print(f"    Archive ID: {archive_id}")
+                    print(f"    Downloaded to: {download_path}")
+                    print(f"    View Asset: https://ion.cesium.com/assets/{asset_id}")
+                    self._log("info", f"  📥 {item['file']} -> Asset ID: {asset_id}, Archive ID: {archive_id}, Downloaded: {download_path}")
+            
+            if created_only_archives:
+                print("\n📦 CREATED (NOT DOWNLOADED) ARCHIVES:")
+                print("-" * 40)
+                for item in created_only_archives:
+                    asset_id = item.get('asset_id', 'Unknown')
+                    archive_id = item.get('archive_id', 'Unknown')
+                    print(f"  • {item['file']} (Asset ID: {asset_id})")
+                    print(f"    Archive ID: {archive_id}")
+                    print(f"    View Asset: https://ion.cesium.com/assets/{asset_id}")
+                    self._log("info", f"  📦 {item['file']} -> Asset ID: {asset_id}, Archive ID: {archive_id}")
         
         if self.results['failed']:
             print("\n❌ FAILED UPLOADS:")
@@ -773,43 +831,236 @@ class CesiumAPIHelper:
                     print(f"    Download: {download_url}")
                 print(f"    View Asset: https://ion.cesium.com/assets/{asset_id}")
 
-    def list_archived_assets(self) -> List[Dict]:
+    def download_archive(self, archive_id: str, output_dir: str = "converted") -> Tuple[bool, Optional[str]]:
         """
-        List all archived assets with their details.
+        Download an archive from Cesium ION and save it to the specified directory.
         
+        Args:
+            archive_id: ID of the archive to download
+            output_dir: Directory to save the downloaded archive (default: "converted")
+            
         Returns:
-            List of dictionaries containing archived asset details
+            Tuple of (success, downloaded_file_path)
         """
+        self._log("info", f"Downloading archive {archive_id}...")
+        
         try:
+            # Ensure output directory exists
+            output_path = Path(output_dir)
+            output_path.mkdir(exist_ok=True)
+            
+            # Get the archive details first to check status and get metadata
+            archive_info = self.get_archive_info(archive_id)
+            if not archive_info:
+                self._log("error", f"Could not retrieve archive info for archive {archive_id}")
+                return False, None
+                
+            if archive_info.get('status') != 'COMPLETE':
+                self._log("error", f"Archive {archive_id} is not ready for download (status: {archive_info.get('status')})")
+                return False, None
+            
+            # Request download URL from Cesium ION API
+            download_url_endpoint = f"{self.api_archive_url}/{archive_id}/download"
+            self._log("debug", f"Requesting download URL from: {download_url_endpoint}")
+            
             response = requests.get(
-                self.api_archive_url,
+                download_url_endpoint,
                 headers=self.headers,
                 timeout=30
             )
             response.raise_for_status()
-            result = response.json()
-            archived_assets = []
-
-            for archive in result['items']:
-                archive_id = archive.get('id')
-                name = archive.get('name', 'Unnamed Archive')
-                status = archive.get('status', 'Unknown')
-                size = round(archive.get('bytesArchived', 0) / (1024 * 1024), 5 ) # Convert bytes to MB
-                format = archive.get('format', 'Unknown')
-                assetIds = archive.get('assetIds', [])
-             
-
-                archived_assets.append({
-                    'id': archive_id,
-                    'name': name,
-                    'status': status,
-                    'size': size,
-                    'format': format,
-                    'assetIds': assetIds
-                })
-
-            return archived_assets
-
+            
+            # Check if response contains a redirect URL or direct download
+            if response.headers.get('content-type', '').startswith('application/json'):
+                # Response contains JSON with download URL
+                download_data = response.json()
+                download_url = download_data.get('url') or download_data.get('downloadUrl')
+                if not download_url:
+                    self._log("error", f"No download URL found in response for archive {archive_id}")
+                    return False, None
+            else:
+                # Direct download response
+                download_url = response.url
+            
+            self._log("debug", f"Download URL obtained for archive {archive_id}")
+            
+            # Download the archive file with progress tracking
+            archive_name = archive_info.get('name', f'archive_{archive_id}')
+            # Clean filename for filesystem
+            safe_name = "".join(c for c in archive_name if c.isalnum() or c in (' ', '-', '_', '.')).rstrip()
+            if not safe_name:
+                safe_name = f'archive_{archive_id}'
+            
+            archive_file_path = output_path / f"{safe_name}.zip"
+            
+            # Handle duplicate filenames
+            counter = 1
+            while archive_file_path.exists():
+                name_part = archive_file_path.stem
+                archive_file_path = output_path / f"{name_part}_{counter}.zip"
+                counter += 1
+            
+            self._log("info", f"Downloading archive to: {archive_file_path}")
+            
+            # Download with progress tracking
+            download_response = requests.get(download_url, stream=True)
+            download_response.raise_for_status()
+            
+            total_size = int(download_response.headers.get('content-length', 0))
+            
+            with open(archive_file_path, 'wb') as f:
+                if total_size > 0:
+                    with tqdm(total=total_size, unit='B', unit_scale=True, desc=f"Downloading {archive_file_path.name}") as pbar:
+                        for chunk in download_response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                                pbar.update(len(chunk))
+                else:
+                    for chunk in download_response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+            
+            # Verify file was downloaded
+            if archive_file_path.exists() and archive_file_path.stat().st_size > 0:
+                file_size_mb = archive_file_path.stat().st_size / (1024 * 1024)
+                self._log("info", f"✅ Archive {archive_id} downloaded successfully: {archive_file_path} ({file_size_mb:.2f} MB)")
+                return True, str(archive_file_path)
+            else:
+                self._log("error", f"❌ Downloaded file is empty or doesn't exist: {archive_file_path}")
+                return False, None
+                
         except requests.exceptions.RequestException as e:
-            self._log("error", f"❌ Error fetching archived assets: {e}")
+            self._log("error", f"❌ Error downloading archive {archive_id}: {str(e)}")
+            return False, None
+        except Exception as e:
+            self._log("error", f"❌ Unexpected error downloading archive {archive_id}: {str(e)}")
+            return False, None
+
+    def get_archive_info(self, archive_id: str) -> Optional[Dict]:
+        """
+        Get detailed information about a specific archive.
+        
+        Args:
+            archive_id: ID of the archive to get info for
+            
+        Returns:
+            Archive information dictionary or None if error
+        """
+        try:
+            url = f"{self.api_archive_url}/{archive_id}"
+            self._log("debug", f"Fetching archive info from: {url}")
+            
+            response = requests.get(
+                url,
+                headers=self.headers,
+                timeout=30
+            )
+            response.raise_for_status()
+            archive_data = response.json()
+            
+            self._log("debug", f"Archive {archive_id} info retrieved successfully")
+            return archive_data
+            
+        except requests.exceptions.RequestException as e:
+            self._log("error", f"Error fetching archive info for {archive_id}: {str(e)}")
+            return None
+
+    def download_all_completed_archives(self, output_dir: str = "converted") -> List[Dict]:
+        """
+        Download all completed archives from Cesium ION.
+        
+        Args:
+            output_dir: Directory to save downloaded archives (default: "converted")
+            
+        Returns:
+            List of download results with details
+        """
+        self._log("info", "Downloading all completed archives...")
+        
+        # Get list of all archives
+        archived_assets = self.list_archived_assets()
+        if not archived_assets:
+            self._log("warning", "No archives found")
+            print("❌ No archives found")
             return []
+        
+        # Filter for completed archives
+        completed_archives = [
+            archive for archive in archived_assets 
+            if archive.get('status') == 'COMPLETE'
+        ]
+        
+        if not completed_archives:
+            self._log("warning", "No completed archives found")
+            print("❌ No completed archives found for download")
+            return []
+        
+        print(f"📦 Found {len(completed_archives)} completed archives for download")
+        self._log("info", f"Found {len(completed_archives)} completed archives for download")
+        
+        download_results = []
+        
+        # Download each archive
+        with tqdm(total=len(completed_archives), desc="Downloading archives", unit="archive") as pbar:
+            for archive in completed_archives:
+                archive_id = archive.get('id')
+                archive_name = archive.get('name', f'Archive {archive_id}')
+                
+                try:
+                    success, file_path = self.download_archive(archive_id, output_dir)
+                    
+                    result = {
+                        'archive_id': archive_id,
+                        'name': archive_name,
+                        'success': success,
+                        'file_path': file_path,
+                        'size_mb': archive.get('size', 0)
+                    }
+                    
+                    if success:
+                        result['message'] = f"Downloaded successfully to {file_path}"
+                        pbar.set_postfix_str(f"✅ {archive_name}")
+                    else:
+                        result['message'] = "Download failed"
+                        pbar.set_postfix_str(f"❌ {archive_name}")
+                    
+                    download_results.append(result)
+                    
+                except Exception as e:
+                    result = {
+                        'archive_id': archive_id,
+                        'name': archive_name,
+                        'success': False,
+                        'file_path': None,
+                        'message': f"Unexpected error: {str(e)}"
+                    }
+                    download_results.append(result)
+                    self._log("error", f"Unexpected error downloading archive {archive_id}: {str(e)}")
+                    pbar.set_postfix_str(f"❌ {archive_name}")
+                
+                pbar.update(1)
+        
+        # Print summary
+        successful_downloads = len([r for r in download_results if r['success']])
+        failed_downloads = len([r for r in download_results if not r['success']])
+        
+        print(f"\n📥 Download completed: {successful_downloads}/{len(completed_archives)} archives downloaded successfully")
+        
+        if successful_downloads > 0:
+            print("\n✅ SUCCESSFULLY DOWNLOADED ARCHIVES:")
+            print("-" * 50)
+            for result in download_results:
+                if result['success']:
+                    print(f"  • {result['name']} (ID: {result['archive_id']})")
+                    print(f"    File: {result['file_path']}")
+                    if result.get('size_mb'):
+                        print(f"    Size: {result['size_mb']:.2f} MB")
+        
+        if failed_downloads > 0:
+            print("\n❌ FAILED DOWNLOADS:")
+            print("-" * 30)
+            for result in download_results:
+                if not result['success']:
+                    print(f"  • {result['name']} (ID: {result['archive_id']}): {result['message']}")
+        
+        return download_results

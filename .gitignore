@@ -1,4 +1,5 @@
 data
+converted
 __pycache__/
 venv/
 .env

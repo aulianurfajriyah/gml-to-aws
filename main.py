@@ -42,10 +42,12 @@ Examples:
   python main.py                        # Upload files, don't wait for processing
   python main.py --wait                 # Upload files and wait for processing
   python main.py --wait --archive       # Upload, wait for processing, and create archives
+  python main.py --wait --archive --download  # Upload, wait, create archives, and download them
   python main.py --workers 5            # Use 5 concurrent uploads
   python main.py --logging              # Enable detailed logging
   python main.py --wait --logging       # Upload, wait, and enable logging
   python main.py --wait --archive --logging  # Full workflow with logging
+  python main.py --wait --archive --download --logging  # Complete workflow with downloads and logging
         """
     )
     
@@ -73,12 +75,23 @@ Examples:
         action='store_true', 
         help='Create archives after successful processing (requires --wait)'
     )
+    
+    parser.add_argument(
+        '--download', 
+        action='store_true', 
+        help='Download archives after creation to converted folder (requires --archive)'
+    )
 
     args = parser.parse_args()
     
     # Validate arguments
     if args.archive and not args.wait:
         print("❌ Error: --archive requires --wait (archives can only be created after processing completes)")
+        parser.print_help()
+        return
+    
+    if args.download and not args.archive:
+        print("❌ Error: --download requires --archive (downloads can only happen after archive creation)")
         parser.print_help()
         return
     
@@ -95,7 +108,7 @@ Examples:
         print("=" * 50)
         
         log_if_enabled("info", "=== GML to Cesium ION Uploader Started ===")
-        log_if_enabled("info", f"Command line arguments: wait={args.wait}, workers={args.workers}, logging={args.logging}, archive={args.archive}")
+        log_if_enabled("info", f"Command line arguments: wait={args.wait}, workers={args.workers}, logging={args.logging}, archive={args.archive}, download={args.download}")
         
         # Initialize uploader (this will set up the main logging)
         cesiumHelper = CesiumAPIHelper(enable_logging=args.logging)
@@ -113,6 +126,8 @@ Examples:
             print("⏳ Will monitor processing status until completion")
         if args.archive:
             print("📦 Will create archives after processing completion")
+        if args.download:
+            print("📥 Will download archives to 'converted' folder")
         
         log_if_enabled("info", f"Starting upload process for {len(gml_files)} files")
         
@@ -122,7 +137,8 @@ Examples:
             gml_files, 
             max_workers=args.workers, 
             wait_for_completion=args.wait,
-            create_archive=args.archive
+            create_archive=args.archive,
+            download_archive=args.download
         )
         end_time = datetime.now()
         
@@ -147,17 +163,22 @@ Examples:
         # Final success/failure determination
         success_count = len(cesiumHelper.results['success'])
         archived_count = len(cesiumHelper.results['archived'])
+        downloaded_count = len([item for item in cesiumHelper.results['archived'] if item.get('download_path')])
         total_count = len(gml_files)
         
         if success_count == total_count:
             log_if_enabled("info", "✅ All uploads completed successfully")
-            if args.archive and archived_count > 0:
+            if args.download and downloaded_count > 0:
+                print(f"\n🎉 All uploads completed successfully! {archived_count} archives created and {downloaded_count} downloaded!")
+            elif args.archive and archived_count > 0:
                 print(f"\n🎉 All uploads completed successfully! {archived_count} archives created!")
             else:
                 print("\n🎉 All uploads completed successfully!")
         elif success_count > 0:
             log_if_enabled("warning", f"⚠️ Partial success: {success_count}/{total_count} uploads succeeded")
-            if args.archive and archived_count > 0:
+            if args.download and downloaded_count > 0:
+                print(f"\n⚠️ Partial success: {success_count}/{total_count} uploads succeeded, {archived_count} archives created, {downloaded_count} downloaded")
+            elif args.archive and archived_count > 0:
                 print(f"\n⚠️ Partial success: {success_count}/{total_count} uploads succeeded, {archived_count} archives created")
             else:
                 print(f"\n⚠️ Partial success: {success_count}/{total_count} uploads succeeded")
