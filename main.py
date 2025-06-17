@@ -39,11 +39,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py                     # Upload files, don't wait for processing
-  python main.py --wait              # Upload files and wait for processing
-  python main.py --workers 5         # Use 5 concurrent uploads
-  python main.py --logging           # Enable detailed logging
-  python main.py --wait --logging    # Upload, wait, and enable logging
+  python main.py                        # Upload files, don't wait for processing
+  python main.py --wait                 # Upload files and wait for processing
+  python main.py --wait --archive       # Upload, wait for processing, and create archives
+  python main.py --workers 5            # Use 5 concurrent uploads
+  python main.py --logging              # Enable detailed logging
+  python main.py --wait --logging       # Upload, wait, and enable logging
+  python main.py --wait --archive --logging  # Full workflow with logging
         """
     )
     
@@ -65,8 +67,20 @@ Examples:
         action='store_true', 
         help='Enable detailed logging to file and console (default: false)'
     )
+    
+    parser.add_argument(
+        '--archive', 
+        action='store_true', 
+        help='Create archives after successful processing (requires --wait)'
+    )
 
     args = parser.parse_args()
+    
+    # Validate arguments
+    if args.archive and not args.wait:
+        print("❌ Error: --archive requires --wait (archives can only be created after processing completes)")
+        parser.print_help()
+        return
     
     # Set up logging for main script
     logger = setup_main_logging(args.logging)
@@ -81,7 +95,7 @@ Examples:
         print("=" * 50)
         
         log_if_enabled("info", "=== GML to Cesium ION Uploader Started ===")
-        log_if_enabled("info", f"Command line arguments: wait={args.wait}, workers={args.workers}, logging={args.logging}")
+        log_if_enabled("info", f"Command line arguments: wait={args.wait}, workers={args.workers}, logging={args.logging}, archive={args.archive}")
         
         # Initialize uploader (this will set up the main logging)
         cesiumHelper = CesiumAPIHelper(enable_logging=args.logging)
@@ -97,6 +111,8 @@ Examples:
         print(f"📁 Found {len(gml_files)} GML files")
         if args.wait:
             print("⏳ Will monitor processing status until completion")
+        if args.archive:
+            print("📦 Will create archives after processing completion")
         
         log_if_enabled("info", f"Starting upload process for {len(gml_files)} files")
         
@@ -105,7 +121,8 @@ Examples:
         cesiumHelper.upload_files_parallel(
             gml_files, 
             max_workers=args.workers, 
-            wait_for_completion=args.wait
+            wait_for_completion=args.wait,
+            create_archive=args.archive
         )
         end_time = datetime.now()
         
@@ -129,14 +146,21 @@ Examples:
         
         # Final success/failure determination
         success_count = len(cesiumHelper.results['success'])
+        archived_count = len(cesiumHelper.results['archived'])
         total_count = len(gml_files)
         
         if success_count == total_count:
             log_if_enabled("info", "✅ All uploads completed successfully")
-            print("\n🎉 All uploads completed successfully!")
+            if args.archive and archived_count > 0:
+                print(f"\n🎉 All uploads completed successfully! {archived_count} archives created!")
+            else:
+                print("\n🎉 All uploads completed successfully!")
         elif success_count > 0:
             log_if_enabled("warning", f"⚠️ Partial success: {success_count}/{total_count} uploads succeeded")
-            print(f"\n⚠️ Partial success: {success_count}/{total_count} uploads succeeded")
+            if args.archive and archived_count > 0:
+                print(f"\n⚠️ Partial success: {success_count}/{total_count} uploads succeeded, {archived_count} archives created")
+            else:
+                print(f"\n⚠️ Partial success: {success_count}/{total_count} uploads succeeded")
         else:
             log_if_enabled("error", "❌ All uploads failed")
             print("\n❌ All uploads failed")

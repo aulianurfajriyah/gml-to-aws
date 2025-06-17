@@ -183,6 +183,33 @@ def monitor_assets(cesium_helper: CesiumAPIHelper, asset_ids: List[str], interva
     except KeyboardInterrupt:
         print("\n\n👋 Monitoring stopped by user")
 
+def list_archives(cesium_helper: CesiumAPIHelper) -> None:
+    """List available archives in Cesium ION."""
+    print("📦 Listing available archives...")
+    print("=" * 60)
+    
+    archives = cesium_helper.list_archived_assets()
+    
+    if not archives:
+        print("❌ No archives found or error retrieving archives")
+        return
+    
+    print("📦 Archived Assets:")
+    print("-" * 40)
+    for archive in archives:
+        archive_id = archive.get('id', 'Unknown')
+        name = archive.get('name', 'Unnamed')
+        status = archive.get('status', 'Unknown')
+        download_url = archive.get('downloadUrl')
+
+        print(f"  • Archive ID: {archive_id}")
+        print(f"    Name: {name}")
+        print(f"    Status: {status}")
+        if download_url:
+            print(f"    Download: {download_url}")
+        print(f"    View Archive: https://ion.cesium.com/archives/{archive_id}")
+        
+
 
 def main():
     """Main function."""

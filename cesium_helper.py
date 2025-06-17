@@ -73,6 +73,7 @@ class CesiumAPIHelper:
     def __init__(self, enable_logging: bool = False):
         self.api_url = "https://api.cesium.com"
         self.api_asset_url = f"{self.api_url}/v1/assets"
+        self.api_archive_url = f"{self.api_url}/v1/archives"
         self.token = os.getenv('CESIUM_ION_TOKEN')
         self.enable_logging = enable_logging
         
@@ -95,7 +96,8 @@ class CesiumAPIHelper:
         
         self.results = {
             'success': [],
-            'failed': []
+            'failed': [],
+            'archived': []
         }
     
     def _log(self, level: str, message: str) -> None:
@@ -354,13 +356,14 @@ class CesiumAPIHelper:
         self._log("error", f"❌ Timeout waiting for asset {asset_id} processing (waited {elapsed:.1f}s)")
         return False, "TIMEOUT"
 
-    def upload_gml_file(self, file_path: str, wait_for_completion: bool = False) -> Tuple[str, bool, str, Optional[str]]:
+    def upload_gml_file(self, file_path: str, wait_for_completion: bool = False, create_archive: bool = False) -> Tuple[str, bool, str, Optional[str]]:
         """
-        Complete 4-step upload workflow for a GML file.
+        Complete upload workflow for a GML file with optional archive creation.
         
         Args:
             file_path: Path to the GML file to upload
             wait_for_completion: Whether to wait for processing to complete
+            create_archive: Whether to create archive after successful processing
             
         Returns:
             Tuple of (filename, success_status, message, asset_id)
@@ -394,8 +397,33 @@ class CesiumAPIHelper:
                 self._log("info", f"Waiting for processing completion for {filename} (Asset ID: {asset_id})")
                 success, final_status = self.wait_for_processing(str(asset_id))
                 if success:
-                    self._log("info", f"✅ Complete workflow success for {filename} (Asset ID: {asset_id})")
-                    return filename, True, f"Upload and processing completed successfully (Asset ID: {asset_id})", str(asset_id)
+                    # Step 5: Optionally create archive after successful processing
+                    if create_archive:
+                        self._log("info", f"Creating archive for {filename} (Asset ID: {asset_id})")
+                        archive_success, archive_id, archive_message = self.create_archive(str(asset_id))
+                        
+                        if archive_success and archive_id:
+                            # Wait for archive completion
+                            archive_completed, archive_status = self.wait_for_archive_completion(archive_id)
+                            
+                            if archive_completed:
+                                archive_info = {
+                                    'file': filename,
+                                    'asset_id': str(asset_id),
+                                    'archive_id': archive_id,
+                                }
+                                self.results['archived'].append(archive_info)
+                                self._log("info", f"✅ Complete workflow with archive success for {filename} (Asset ID: {asset_id}, Archive ID: {archive_id})")
+                                return filename, True, f"Upload, processing, and archive completed successfully (Asset ID: {asset_id}, Archive ID: {archive_id})", str(asset_id)
+                            else:
+                                self._log("warning", f"⚠️ Processing succeeded but archive creation failed for {filename} (Asset ID: {asset_id})")
+                                return filename, True, f"Upload and processing completed, but archive failed with status: {archive_status} (Asset ID: {asset_id})", str(asset_id)
+                        else:
+                            self._log("warning", f"⚠️ Processing succeeded but archive creation failed for {filename} (Asset ID: {asset_id})")
+                            return filename, True, f"Upload and processing completed, but archive creation failed: {archive_message} (Asset ID: {asset_id})", str(asset_id)
+                    else:
+                        self._log("info", f"✅ Complete workflow success for {filename} (Asset ID: {asset_id})")
+                        return filename, True, f"Upload and processing completed successfully (Asset ID: {asset_id})", str(asset_id)
                 else:
                     self._log("warning", f"⚠️ Upload succeeded but processing failed for {filename} (Asset ID: {asset_id}, Status: {final_status})")
                     return filename, False, f"Upload succeeded but processing failed with status: {final_status} (Asset ID: {asset_id})", str(asset_id)
@@ -407,30 +435,34 @@ class CesiumAPIHelper:
             self._log("error", f"❌ Unexpected error in upload workflow for {filename}: {str(e)}")
             return filename, False, f"Unexpected error: {str(e)}", None
     
-    def upload_files_parallel(self, file_paths: List[str], max_workers: int = 10, wait_for_completion: bool = False) -> None:
+    def upload_files_parallel(self, file_paths: List[str], max_workers: int = 10, wait_for_completion: bool = False, create_archive: bool = False) -> None:
         """
-        Upload files in parallel with progress bar.
+        Upload files in parallel with progress bar and optional archive creation.
         
         Args:
             file_paths: List of file paths to upload
             max_workers: Maximum number of concurrent uploads
             wait_for_completion: Whether to wait for processing to complete
+            create_archive: Whether to create archives after successful processing
         """
         self._log("info", f"=== Starting parallel upload session ===")
         self._log("info", f"Files to upload: {len(file_paths)}")
         self._log("info", f"Max workers: {max_workers}")
         self._log("info", f"Wait for completion: {wait_for_completion}")
+        self._log("info", f"Create archives: {create_archive}")
         
         print(f"\n🚀 Starting upload of {len(file_paths)} GML files to Cesium ION...")
         if wait_for_completion:
             print("⏳ Will wait for processing completion...")
+        if create_archive:
+            print("📦 Will create archives after processing...")
         
         start_time = time.time()
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tasks
             future_to_file = {
-                executor.submit(self.upload_gml_file, file_path, wait_for_completion): file_path 
+                executor.submit(self.upload_gml_file, file_path, wait_for_completion, create_archive): file_path 
                 for file_path in file_paths
             }
             
@@ -465,18 +497,21 @@ class CesiumAPIHelper:
         total_time = time.time() - start_time
         success_count = len(self.results['success'])
         failed_count = len(self.results['failed'])
+        archived_count = len(self.results['archived'])
         
         self._log("info", f"=== Upload session completed ===")
         self._log("info", f"Total time: {total_time:.2f} seconds")
         self._log("info", f"Successful uploads: {success_count}")
         self._log("info", f"Failed uploads: {failed_count}")
+        self._log("info", f"Archived assets: {archived_count}")
         self._log("info", f"Success rate: {(success_count / len(file_paths)) * 100:.1f}%")
     
     def print_summary(self) -> None:
-        """Print a summary of upload results."""
+        """Print a summary of upload results including archive information."""
         total_files = len(self.results['success']) + len(self.results['failed'])
         success_count = len(self.results['success'])
         failed_count = len(self.results['failed'])
+        archived_count = len(self.results['archived'])
         success_rate = (success_count / total_files * 100) if total_files > 0 else 0
         
         # Log summary to file
@@ -484,6 +519,7 @@ class CesiumAPIHelper:
         self._log("info", f"Total files processed: {total_files}")
         self._log("info", f"Successful uploads: {success_count}")
         self._log("info", f"Failed uploads: {failed_count}")
+        self._log("info", f"Archived assets: {archived_count}")
         self._log("info", f"Success rate: {success_rate:.1f}%")
         
         print("\n" + "="*60)
@@ -492,6 +528,7 @@ class CesiumAPIHelper:
         print(f"Total files processed: {total_files}")
         print(f"✅ Successful uploads: {success_count}")
         print(f"❌ Failed uploads: {failed_count}")
+        print(f"📦 Archived assets: {archived_count}")
         print(f"📊 Success rate: {success_rate:.1f}%")
         
         if self.results['success']:
@@ -503,6 +540,21 @@ class CesiumAPIHelper:
                 print(f"  • {item['file']} (Asset ID: {asset_id})")
                 print(f"    View: https://ion.cesium.com/assets/{asset_id}")
                 self._log("info", f"  ✅ {item['file']} -> Asset ID: {asset_id}")
+        
+        if self.results['archived']:
+            print("\n📦 ARCHIVED ASSETS:")
+            print("-" * 40)
+            self._log("info", "Archived assets details:")
+            for item in self.results['archived']:
+                asset_id = item.get('asset_id', 'Unknown')
+                archive_id = item.get('archive_id', 'Unknown')
+                download_url = item.get('download_url')
+                print(f"  • {item['file']} (Asset ID: {asset_id})")
+                print(f"    Archive ID: {archive_id}")
+                if download_url:
+                    print(f"    Download: {download_url}")
+                print(f"    View Asset: https://ion.cesium.com/assets/{asset_id}")
+                self._log("info", f"  📦 {item['file']} -> Asset ID: {asset_id}, Archive ID: {archive_id}")
         
         if self.results['failed']:
             print("\n❌ FAILED UPLOADS:")
@@ -537,3 +589,227 @@ class CesiumAPIHelper:
             if asset_id:
                 asset_ids.append(asset_id)
         return asset_ids
+
+    def create_archive(self, asset_id: str) -> Tuple[bool, Optional[str], str]:
+        """
+        Create an archive for a processed asset.
+        
+        Args:
+            asset_id: ID of the asset to archive
+            archive_name: Optional custom name for the archive
+            
+        Returns:
+            Tuple of (success, archive_id, message)
+        """
+        self._log("info", f"Step 5: Creating archive for asset {asset_id}")
+        
+
+        
+        payload = {
+            "type": "FULL",
+            "format": "ZIP",
+            "assetIds": [int(asset_id)]
+        }
+        
+        self._log("debug", f"Archive payload: {json.dumps(payload, indent=2)}")
+        
+        try:
+            response = requests.post(
+                self.api_archive_url,
+                headers=self.headers,
+                json=payload,
+                timeout=30
+            )
+            response.raise_for_status()
+            result = response.json()
+            archive_id = result.get('id')
+            
+            if archive_id:
+                self._log("info", f"✅ Archive created successfully for asset {asset_id} (Archive ID: {archive_id})")
+                return True, str(archive_id), f"Archive created successfully (Archive ID: {archive_id})"
+            else:
+                self._log("error", f"❌ Archive creation returned no ID for asset {asset_id}")
+                return False, None, "Archive creation returned no ID"
+                
+        except requests.exceptions.RequestException as e:
+            self._log("error", f"❌ Error creating archive for asset {asset_id}: {str(e)}")
+            return False, None, f"Error creating archive: {str(e)}"
+
+    def wait_for_archive_completion(self, archive_id: str, timeout: int = 300) -> Tuple[bool, str]:
+        """
+        Monitor archive creation status.
+        
+        Args:
+            archive_id: ID of the archive to monitor
+            timeout: Maximum time to wait in seconds (default: 5 minutes)
+            
+        Returns:
+            Tuple of (success, final_status)
+        """
+        self._log("info", f"Monitoring archive status for archive {archive_id} (timeout: {timeout}s)")
+        start_time = time.time()
+        last_status = None
+        
+        while time.time() - start_time < timeout:
+            try:
+                url = f"{self.api_archive_url}/{archive_id}"
+                response = requests.get(
+                    url,
+                    headers=self.headers,
+                    timeout=30
+                )
+                response.raise_for_status()
+                archive_data = response.json()
+                status = archive_data.get('status', 'UNKNOWN')
+                
+                # Log status changes
+                if status != last_status:
+                    elapsed = time.time() - start_time
+                    self._log("info", f"Archive {archive_id} status changed to: {status} (after {elapsed:.1f}s)")
+                    last_status = status
+                
+                if status == 'COMPLETE':
+                    elapsed = time.time() - start_time
+                    self._log("info", f"✅ Archive {archive_id} creation completed successfully in {elapsed:.1f}s")
+                    return True, status
+                elif status in ['ERROR', 'FAILED']:
+                    elapsed = time.time() - start_time
+                    self._log("error", f"❌ Archive {archive_id} creation failed with status: {status} (after {elapsed:.1f}s)")
+                    return False, status
+                elif status in ['PENDING', 'IN_PROGRESS', 'PROCESSING']:
+                    # Still processing, wait and check again
+                    time.sleep(5)
+                else:
+                    # Unknown status, continue waiting
+                    self._log("warning", f"Unknown archive status '{status}' for archive {archive_id}, continuing to wait...")
+                    time.sleep(5)
+                    
+            except Exception as e:
+                self._log("error", f"Error checking archive status for {archive_id}: {str(e)}")
+                time.sleep(5)
+        
+        elapsed = time.time() - start_time
+        self._log("error", f"❌ Timeout waiting for archive {archive_id} creation (waited {elapsed:.1f}s)")
+        return False, "TIMEOUT"
+
+    def create_archives_for_completed_assets(self, asset_ids: List[str]) -> None:
+        """
+        Create archives for a list of already completed assets.
+        
+        Args:
+            asset_ids: List of asset IDs to create archives for
+        """
+        self._log("info", f"=== Creating archives for {len(asset_ids)} completed assets ===")
+        print(f"\n📦 Creating archives for {len(asset_ids)} completed assets...")
+        
+        completed_assets = []
+        failed_assets = []
+        
+        # First, check which assets are actually completed
+        print("🔍 Checking asset statuses...")
+        for asset_id in asset_ids:
+            asset_data = self.get_asset_status(asset_id)
+            if asset_data and asset_data.get('status') == 'COMPLETE':
+                completed_assets.append(asset_id)
+                self._log("info", f"Asset {asset_id} is ready for archiving")
+            else:
+                status = asset_data.get('status', 'UNKNOWN') if asset_data else 'ERROR_FETCHING'
+                failed_assets.append((asset_id, status))
+                self._log("warning", f"Asset {asset_id} not ready for archiving (status: {status})")
+        
+        if not completed_assets:
+            print("❌ No completed assets found for archiving")
+            return
+        
+        print(f"✅ Found {len(completed_assets)} completed assets ready for archiving")
+        if failed_assets:
+            print(f"⚠️ {len(failed_assets)} assets not ready for archiving")
+        
+        # Create archives for completed assets
+        with tqdm(total=len(completed_assets), desc="Creating archives", unit="archive") as pbar:
+            for asset_id in completed_assets:
+                try:
+                    # Create archive
+                    success, archive_id, message = self.create_archive(asset_id)
+                    
+                    if success and archive_id:
+                        # Wait for archive completion
+                        archive_completed, archive_status = self.wait_for_archive_completion(archive_id)
+                        
+                        if archive_completed:
+                            archive_info = {
+                                'asset_id': asset_id,
+                                'archive_id': archive_id,
+                            }
+                            self.results['archived'].append(archive_info)
+                            self._log("info", f"✅ Archive created successfully for asset {asset_id} (Archive ID: {archive_id})")
+                            pbar.set_postfix_str(f"✅ Asset {asset_id}")
+                        else:
+                            self._log("error", f"❌ Archive creation failed for asset {asset_id} (status: {archive_status})")
+                            pbar.set_postfix_str(f"❌ Asset {asset_id}")
+                    else:
+                        self._log("error", f"❌ Failed to create archive for asset {asset_id}: {message}")
+                        pbar.set_postfix_str(f"❌ Asset {asset_id}")
+                        
+                except Exception as e:
+                    self._log("error", f"❌ Unexpected error creating archive for asset {asset_id}: {str(e)}")
+                    pbar.set_postfix_str(f"❌ Asset {asset_id}")
+                
+                pbar.update(1)
+        
+        # Print results
+        successful_archives = len(self.results['archived'])
+        print(f"\n📦 Archive creation completed: {successful_archives}/{len(completed_assets)} archives created successfully")
+        
+        if self.results['archived']:
+            print("\n📦 CREATED ARCHIVES:")
+            print("-" * 40)
+            for item in self.results['archived']:
+                asset_id = item.get('asset_id', 'Unknown')
+                archive_id = item.get('archive_id', 'Unknown')
+                download_url = item.get('download_url')
+                print(f"  • Asset {asset_id} -> Archive {archive_id}")
+                if download_url:
+                    print(f"    Download: {download_url}")
+                print(f"    View Asset: https://ion.cesium.com/assets/{asset_id}")
+
+    def list_archived_assets(self) -> List[Dict]:
+        """
+        List all archived assets with their details.
+        
+        Returns:
+            List of dictionaries containing archived asset details
+        """
+        try:
+            response = requests.get(
+                self.api_archive_url,
+                headers=self.headers,
+                timeout=30
+            )
+            response.raise_for_status()
+            result = response.json()
+            archived_assets = []
+
+            for archive in result['items']:
+                archive_id = archive.get('id')
+                name = archive.get('name', 'Unnamed Archive')
+                status = archive.get('status', 'Unknown')
+                size = round(archive.get('bytesArchived', 0) / (1024 * 1024), 5 ) # Convert bytes to MB
+                format = archive.get('format', 'Unknown')
+                assetIds = archive.get('assetIds', [])
+             
+
+                archived_assets.append({
+                    'id': archive_id,
+                    'name': name,
+                    'status': status,
+                    'size': size,
+                    'format': format,
+                    'assetIds': assetIds
+                })
+
+            return archived_assets
+
+        except requests.exceptions.RequestException as e:
+            self._log("error", f"❌ Error fetching archived assets: {e}")
+            return []
