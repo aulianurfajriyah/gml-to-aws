@@ -3,6 +3,8 @@
 GML to Cesium ION Uploader
 
 This script uploads GML files from the data folder to Cesium ION API
+
+Continuing uploads the 3dtiles to web and S3 storage
 """
 
 import argparse
@@ -10,7 +12,7 @@ import logging
 from pathlib import Path
 from datetime import datetime
 from cesium_helper import CesiumAPIHelper
-
+from upload2S3_helper import upload_subgrids_bulk
 
 def setup_main_logging(enabled: bool = False) -> logging.Logger:
     """Set up logging for the main script.
@@ -48,6 +50,8 @@ Examples:
   python main.py --wait --logging       # Upload, wait, and enable logging
   python main.py --wait --archive --logging  # Full workflow with logging
   python main.py --wait --archive --download --logging  # Complete workflow with downloads and logging
+  python main.py --upload2S3            # Upload subgrids to 3D tiles API
+  python main.py --wait --archive --download --upload2S3  # Complete workflow with S3 upload
         """
     )
     
@@ -82,6 +86,12 @@ Examples:
         help='Download archives after creation to converted folder (requires --archive)'
     )
 
+    parser.add_argument(
+    '--upload2S3', 
+    action='store_true', 
+    help='Upload subgrids from converted folder to 3D tiles API using centroid.csv'
+    )
+
     args = parser.parse_args()
     
     # Validate arguments
@@ -110,82 +120,120 @@ Examples:
         log_if_enabled("info", "=== GML to Cesium ION Uploader Started ===")
         log_if_enabled("info", f"Command line arguments: wait={args.wait}, workers={args.workers}, logging={args.logging}, archive={args.archive}, download={args.download}")
         
-        # Initialize uploader (this will set up the main logging)
-        cesiumHelper = CesiumAPIHelper(enable_logging=args.logging)
+        cesium_completed = False
         
-        # Get GML files
-        gml_files = cesiumHelper.get_gml_files()
+        # Cesium ION workflow if other arguments are provided
+        if any([args.wait, args.archive, args.download]) or not args.upload2S3:
+            print("\n🌐 Starting Cesium ION Upload Process...")
+            log_if_enabled("info", "Starting Cesium ION upload process")
+
+            # Initialize uploader (this will set up the main logging)
+            cesiumHelper = CesiumAPIHelper(enable_logging=args.logging)
+            
+            # Get GML files
+            gml_files = cesiumHelper.get_gml_files()
+            
+            if not gml_files:
+                log_if_enabled("warning", "No GML files found in the 'data' folder")
+                print("❌ No GML files found in the 'data' folder.")
+                return
+            
+            print(f"📁 Found {len(gml_files)} GML files")
+            if args.wait:
+                print("⏳ Will monitor processing status until completion")
+            if args.archive:
+                print("📦 Will create archives after processing completion")
+            if args.download:
+                print("📥 Will download archives to 'converted' folder")
+            
+            log_if_enabled("info", f"Starting upload process for {len(gml_files)} files")
+            
+            # Upload files in parallel
+            start_time = datetime.now()
+            cesiumHelper.upload_files_parallel(
+                gml_files, 
+                max_workers=args.workers, 
+                wait_for_completion=args.wait,
+                create_archive=args.archive,
+                download_archive=args.download
+            )
+            end_time = datetime.now()
+            
+            # Log timing information
+            duration = end_time - start_time
+            log_if_enabled("info", f"Upload process completed in {duration.total_seconds():.2f} seconds")
+            
+            # Print summary
+            cesiumHelper.print_summary()
+            cesium_completed = True
+            
+            # If uploads were successful and we didn't wait, show monitoring tip
+            if not args.wait and cesiumHelper.results['success']:
+                asset_ids = cesiumHelper.get_asset_ids_from_results()
+                if asset_ids:
+                    print("\n💡 Monitor processing status with:")
+                    print(f"   python check_status.py {' '.join(asset_ids[:3])}")
+                    if len(asset_ids) > 3:
+                        print(f"   (showing first 3 of {len(asset_ids)} assets)")
+                    
+                    log_if_enabled("info", f"Generated monitoring command for {len(asset_ids)} assets")
+            
+            # Final success/failure determination
+            success_count = len(cesiumHelper.results['success'])
+            archived_count = len(cesiumHelper.results['archived'])
+            downloaded_count = len([item for item in cesiumHelper.results['archived'] if item.get('download_path')])
+            total_count = len(gml_files)
         
-        if not gml_files:
-            log_if_enabled("warning", "No GML files found in the 'data' folder")
-            print("❌ No GML files found in the 'data' folder.")
-            return
+            if success_count == total_count:
+                log_if_enabled("info", "✅ All uploads completed successfully")
+                if args.download and downloaded_count > 0:
+                    print(f"\n🎉 All uploads completed successfully! {archived_count} archives created and {downloaded_count} downloaded!")
+                elif args.archive and archived_count > 0:
+                    print(f"\n🎉 All uploads completed successfully! {archived_count} archives created!")
+                else:
+                    print("\n🎉 All uploads completed successfully!")
+            elif success_count > 0:
+                log_if_enabled("warning", f"⚠️ Partial success: {success_count}/{total_count} uploads succeeded")
+                if args.download and downloaded_count > 0:
+                    print(f"\n⚠️ Partial success: {success_count}/{total_count} uploads succeeded, {archived_count} archives created, {downloaded_count} downloaded")
+                elif args.archive and archived_count > 0:
+                    print(f"\n⚠️ Partial success: {success_count}/{total_count} uploads succeeded, {archived_count} archives created")
+                else:
+                    print(f"\n⚠️ Partial success: {success_count}/{total_count} uploads succeeded")
+            else:
+                log_if_enabled("error", "❌ All uploads failed")
+                print("\n❌ All uploads failed")
         
-        print(f"📁 Found {len(gml_files)} GML files")
-        if args.wait:
-            print("⏳ Will monitor processing status until completion")
-        if args.archive:
-            print("📦 Will create archives after processing completion")
-        if args.download:
-            print("📥 Will download archives to 'converted' folder")
-        
-        log_if_enabled("info", f"Starting upload process for {len(gml_files)} files")
-        
-        # Upload files in parallel
-        start_time = datetime.now()
-        cesiumHelper.upload_files_parallel(
-            gml_files, 
-            max_workers=args.workers, 
-            wait_for_completion=args.wait,
-            create_archive=args.archive,
-            download_archive=args.download
-        )
-        end_time = datetime.now()
-        
-        # Log timing information
-        duration = end_time - start_time
-        log_if_enabled("info", f"Upload process completed in {duration.total_seconds():.2f} seconds")
-        
-        # Print summary
-        cesiumHelper.print_summary()
-        
-        # If uploads were successful and we didn't wait, show monitoring tip
-        if not args.wait and cesiumHelper.results['success']:
-            asset_ids = cesiumHelper.get_asset_ids_from_results()
-            if asset_ids:
-                print("\n💡 Monitor processing status with:")
-                print(f"   python check_status.py {' '.join(asset_ids[:3])}")
-                if len(asset_ids) > 3:
-                    print(f"   (showing first 3 of {len(asset_ids)} assets)")
+        # Handle upload2S3 (either standalone or after Cesium workflow)
+        if args.upload2S3:
+            if cesium_completed:
+                print("\n🚀 Now Starting 3D Tiles Subgrid Upload Process...")
+                print("   (After Cesium ION workflow completion)")
+            else:
+                print("\n🚀 Starting 3D Tiles Subgrid Upload Process...")
+            
+            log_if_enabled("info", "Starting 3D tiles upload process")
+            
+            try:
+                successful, failed = upload_subgrids_bulk(enable_logging=args.logging)
                 
-                log_if_enabled("info", f"Generated monitoring command for {len(asset_ids)} assets")
+                if successful:
+                    print(f"\n✅ 3D Tiles upload completed successfully! {len(successful)} files uploaded.")
+                    log_if_enabled("info", f"3D tiles upload successful: {len(successful)} files")
+                else:
+                    print(f"\n⚠️ 3D Tiles upload completed with issues. {len(failed)} files failed.")
+                    log_if_enabled("warning", f"3D tiles upload issues: {len(failed)} files failed")
+                    
+            except Exception as e:
+                print(f"❌ Error during 3D tiles upload: {e}")
+                log_if_enabled("error", f"3D tiles upload error: {e}")
         
-        # Final success/failure determination
-        success_count = len(cesiumHelper.results['success'])
-        archived_count = len(cesiumHelper.results['archived'])
-        downloaded_count = len([item for item in cesiumHelper.results['archived'] if item.get('download_path')])
-        total_count = len(gml_files)
-        
-        if success_count == total_count:
-            log_if_enabled("info", "✅ All uploads completed successfully")
-            if args.download and downloaded_count > 0:
-                print(f"\n🎉 All uploads completed successfully! {archived_count} archives created and {downloaded_count} downloaded!")
-            elif args.archive and archived_count > 0:
-                print(f"\n🎉 All uploads completed successfully! {archived_count} archives created!")
-            else:
-                print("\n🎉 All uploads completed successfully!")
-        elif success_count > 0:
-            log_if_enabled("warning", f"⚠️ Partial success: {success_count}/{total_count} uploads succeeded")
-            if args.download and downloaded_count > 0:
-                print(f"\n⚠️ Partial success: {success_count}/{total_count} uploads succeeded, {archived_count} archives created, {downloaded_count} downloaded")
-            elif args.archive and archived_count > 0:
-                print(f"\n⚠️ Partial success: {success_count}/{total_count} uploads succeeded, {archived_count} archives created")
-            else:
-                print(f"\n⚠️ Partial success: {success_count}/{total_count} uploads succeeded")
-        else:
-            log_if_enabled("error", "❌ All uploads failed")
-            print("\n❌ All uploads failed")
-        
+        # Final summary for combined workflows
+        if cesium_completed and args.upload2S3:
+            print("\n🎉 Complete workflow finished!")
+            print("   ✅ Cesium ION processing completed")
+            print("   ✅ 3D Tiles upload completed")
+
     except ValueError as e:
         log_if_enabled("error", f"Configuration Error: {e}")
         print(f"❌ Configuration Error: {e}")
@@ -195,7 +243,7 @@ Examples:
         log_if_enabled("error", f"Unexpected error: {e}")
         print(f"❌ Unexpected error: {e}")
     finally:
-        log_if_enabled("info", "=== GML to Cesium ION Uploader Finished ===")
+        log_if_enabled("info", "=== GML to AWS Uploader Finished ===")
 
 
 if __name__ == "__main__":

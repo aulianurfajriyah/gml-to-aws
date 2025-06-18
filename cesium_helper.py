@@ -107,7 +107,7 @@ class CesiumAPIHelper:
         if self.enable_logging:
             getattr(self.logger, level)(message)
     
-    def get_gml_files(self, data_folder: str = 'data') -> List[str]:
+    def get_gml_files(self, data_folder: str = '/Volumes/DATA_Server11/01 DKI JAKARTA 2025/03 SKETCHUP/06 PERCEPATAN 50%/GML/TEST_SCRIPT') -> List[str]:
         """Get all GML files from the data folder."""
         pattern = os.path.join(data_folder, '*.gml')
         gml_files = glob.glob(pattern)
@@ -831,7 +831,7 @@ class CesiumAPIHelper:
                     print(f"    Download: {download_url}")
                 print(f"    View Asset: https://ion.cesium.com/assets/{asset_id}")
 
-    def download_archive(self, archive_id: str, output_dir: str = "converted") -> Tuple[bool, Optional[str]]:
+    def download_archive(self, archive_id: str, output_dir: str = "/Volumes/DATA_Server11/01 DKI JAKARTA 2025/03 SKETCHUP/06 PERCEPATAN 50%/GML/RESULT_SCRIPT") -> Tuple[bool, Optional[str]]:
         """
         Download an archive from Cesium ION and save it to the specified directory.
         

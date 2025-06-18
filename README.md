@@ -59,6 +59,15 @@ python main.py --workers 3
 # Combine options - complete workflow with downloads and logging
 python main.py --wait --archive --download --logging --workers 5
 
+# Upload subgrids only
+python main.py --upload2S3
+
+# Upload subgrids with logging
+python main.py --upload2S3 --logging
+
+# Complete workflow: Cesium ION + 3D tiles upload
+python main.py --wait --archive --download --upload2S3 --logging
+
 # Deactivate when done
 deactivate
 ```
@@ -70,6 +79,7 @@ deactivate
 - `--download`: Download archives to 'converted' folder after creation (requires --archive)
 - `--workers N`: Number of concurrent uploads (default: 5)
 - `--logging`: Enable detailed logging to file and console (default: disabled)
+- `--upload2S3` : Upload converted 3dtiles to AWS S3 bucket
 
 ## Logging
 
