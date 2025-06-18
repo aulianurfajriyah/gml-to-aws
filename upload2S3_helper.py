@@ -44,7 +44,7 @@ def upload_subgrids_bulk(enable_logging=False):
     log_if_enabled("info", "Starting bulk upload process")
     
     # Define paths
-    converted_folder = Path("converted")
+    converted_folder = Path("/Volumes/DATA_Server11/01 DKI JAKARTA 2025/03 SKETCHUP/06 PERCEPATAN 50%/GML/RESULT_SCRIPT")
     csv_file = Path("centroid.csv")
     
     # Check if converted folder exists
